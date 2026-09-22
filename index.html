@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Marjal d'Almenara — Nest</title>
+<style>
+  :root { box-sizing: border-box; }
+  * { margin: 0; padding: 0; box-sizing: inherit; }
+  html, body { height: 100%; overflow: hidden; background: #0d1418; }
+  #app { position: fixed; inset: 0; }
+  canvas { display: block; }
+  .veil {
+    position: fixed; inset: 0; display: grid; place-items: center;
+    background: #0d1418; color: #cfe3e0; z-index: 20;
+    font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+    transition: opacity .8s ease;
+  }
+  .veil.gone { opacity: 0; pointer-events: none; }
+  .veil p { font-size: 15px; opacity: .7; font-style: italic; }
+  .controls {
+    position: fixed; right: 16px; bottom: 0; z-index: 10;
+    margin-bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+    display: flex; gap: 8px; align-items: center;
+    font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+  }
+  .controls button {
+    appearance: none; border: 1px solid rgba(207,227,224,.28);
+    background: rgba(13,20,24,.55); color: #dcebe8; backdrop-filter: blur(8px);
+    font-size: 13px; padding: 9px 15px; border-radius: 999px; cursor: pointer;
+    transition: background .18s, border-color .18s; min-width: 92px;
+  }
+  .controls button:hover { background: rgba(30,44,50,.8); border-color: rgba(207,227,224,.5); }
+  .controls button:focus-visible { outline: 2px solid #7fd4c6; outline-offset: 2px; }
+  .hint {
+    position: fixed; left: env(safe-area-inset-left, 0px); bottom: 0; z-index: 10;
+    margin: 0 0 calc(14px + env(safe-area-inset-bottom, 0px)) 24px;
+    font-family: ui-sans-serif, system-ui, sans-serif; font-size: 12px;
+    color: rgba(220,235,232,.5); pointer-events: none;
+  }
+  @media (max-width: 640px) { .hint { display:none; } }
+  @media (prefers-reduced-motion: reduce) { .veil { transition: none; } }
+</style>
+</head>
+<body>
+<div id="app">
+  <div class="veil" id="veil"><p>Loading the marsh…</p></div>
+  <div class="hint">drag to look · scroll to zoom · right-drag to pan</div>
+  <div class="controls"><button id="playpause">Pause</button></div>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
+
+const app = document.getElementById('app');
+const veil = document.getElementById('veil');
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 0.95;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+app.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xd2e2ef);
+const camera = new THREE.PerspectiveCamera(52, innerWidth / innerHeight, 0.1, 60000);
+
+const NEST = new THREE.Vector3(214.5, 1.6, 407.4);
+const START_CAM = new THREE.Vector3(170.2, 135.4, 97.9);
+camera.position.copy(START_CAM);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.06;
+controls.target.copy(NEST);
+controls.maxPolarAngle = Math.PI * 0.495;
+controls.minDistance = 8;
+controls.maxDistance = 1600;
+controls.update();
+
+// painted gradient sky, colours sampled from the visit photo
+const skyGeo = new THREE.SphereGeometry(30000, 32, 16);
+const skyMat = new THREE.ShaderMaterial({
+  side: THREE.BackSide, depthWrite: false,
+  uniforms: {
+    topColor:    { value: new THREE.Color(0x4f8fe0) },
+    midColor:    { value: new THREE.Color(0x7fb3ef) },
+    bottomColor: { value: new THREE.Color(0xd2e2ef) },
+    exponent:    { value: 0.9 }
+  },
+  vertexShader: `
+    varying vec3 vWorldPosition;
+    void main() {
+      vec4 wp = modelMatrix * vec4(position, 1.0);
+      vWorldPosition = wp.xyz;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }
+  `,
+  fragmentShader: `
+    uniform vec3 topColor; uniform vec3 midColor; uniform vec3 bottomColor;
+    uniform float exponent;
+    varying vec3 vWorldPosition;
+    void main() {
+      float hgt = normalize(vWorldPosition).y;
+      float t = max(hgt, 0.0);
+      vec3 lower = mix(bottomColor, midColor, smoothstep(0.0, 0.30, t));
+      vec3 col   = mix(lower, topColor, smoothstep(0.30, 1.0, pow(t, exponent)));
+      gl_FragColor = vec4(col, 1.0);
+    }
+  `
+});
+scene.add(new THREE.Mesh(skyGeo, skyMat));
+
+// sun direction (for lighting only)
+const sun = new THREE.Vector3();
+const ELEV = 58, AZI = 205;
+{
+  const phi = THREE.MathUtils.degToRad(90 - ELEV);
+  const theta = THREE.MathUtils.degToRad(AZI);
+  sun.setFromSphericalCoords(1, phi, theta);
+}
+
+const sunLight = new THREE.DirectionalLight(0xfff6ea, 2.5);
+sunLight.position.copy(sun).multiplyScalar(500).add(NEST);
+sunLight.target.position.copy(NEST);
+sunLight.castShadow = true;
+sunLight.shadow.mapSize.set(2048, 2048);
+sunLight.shadow.camera.near = 1;
+sunLight.shadow.camera.far = 1500;
+const s = 140;
+Object.assign(sunLight.shadow.camera, { left: -s, right: s, top: s, bottom: -s });
+sunLight.shadow.bias = -0.0004;
+scene.add(sunLight);
+scene.add(sunLight.target);
+
+const hemi = new THREE.HemisphereLight(0xcfeaff, 0x6a7a5c, 0.95);
+scene.add(hemi);
+const ambient = new THREE.AmbientLight(0xffffff, 0.22);
+scene.add(ambient);
+
+const draco = new DRACOLoader();
+draco.setDecoderPath('https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/libs/draco/');
+const loader = new GLTFLoader();
+loader.setDRACOLoader(draco);
+
+let mixer = null, action = null, playing = true;
+const clock = new THREE.Clock();
+const maxAniso = renderer.capabilities.getMaxAnisotropy();
+
+loader.load('./EagleNestAndTerrainCombinedAnimationAtStartShort.glb',
+  (gltf) => {
+    const root = gltf.scene;
+    scene.add(root);
+    root.traverse((o) => {
+      if (o.isMesh) {
+        o.castShadow = true; o.receiveShadow = true;
+        const m = o.material;
+        if (m && m.map) {
+          m.map.anisotropy = maxAniso;
+          m.map.colorSpace = THREE.SRGBColorSpace;
+          m.map.needsUpdate = true;
+        }
+      }
+    });
+    if (gltf.animations && gltf.animations.length) {
+      mixer = new THREE.AnimationMixer(root);
+      action = mixer.clipAction(gltf.animations[0]);
+      action.setLoop(THREE.LoopPingPong, Infinity);
+      action.play();
+    }
+    veil.classList.add('gone');
+  },
+  (xhr) => {
+    if (xhr.total) {
+      const pct = Math.round((xhr.loaded / xhr.total) * 100);
+      veil.querySelector('p').textContent = 'Loading the marsh... ' + pct + '%';
+    }
+  },
+  (err) => { veil.querySelector('p').textContent = 'Could not load the scene file.'; console.error(err); }
+);
+
+const btn = document.getElementById('playpause');
+btn.addEventListener('click', () => {
+  playing = !playing;
+  btn.textContent = playing ? 'Pause' : 'Play';
+});
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+renderer.setAnimationLoop(() => {
+  const dt = clock.getDelta();
+  if (mixer && playing) mixer.update(dt);
+  controls.update();
+  renderer.render(scene, camera);
+});
+</script>
+</body>
+</html>
